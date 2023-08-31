@@ -1,11 +1,16 @@
 #include "main.h"
 
+#include <Adafruit_LEDBackpack.h>
 #include <ArduinoOTA.h>
 #include <ESP32Servo.h>
 #include <ESPmDNS.h>
 #include <Ps3Controller.h>
 #include <WiFi.h>
+#include <Wire.h>
+#include <math.h>
 #include <string.h>
+
+#include "SoundDevice.h"
 //********************************************************
 // Calibrate R leg to 120 than attach servo horn
 // Calibrate L leg to 60 than attach servo horn
@@ -14,9 +19,6 @@
 // Roll position for L leg is 60 moving towards 180
 //********************************************************
 void startSerial();
-void startWiFi();
-void startOTA();
-void startMDNS();
 void startRemote();
 void startPeripherals();
 
@@ -25,15 +27,9 @@ Servo LFoot;
 Servo LLeg;
 Servo RFoot;
 Servo RLeg;
-// OTTO Peripherals
-const uint8_t trigPin = 17;
-const uint8_t echoPin = 26;
-const uint8_t buzzPin = 13;
-const uint8_t pushPin = 16;
-const uint8_t LFPin = 33;
-const uint8_t LLPin = 14;
-const uint8_t RFPin = 27;
-const uint8_t RLPin = 32;
+
+SoundDevice sounddev;
+Adafruit_8x16matrix matrix = Adafruit_8x16matrix();
 
 void moveLFoot(uint8_t angle) {
   if (!LFoot.attached()) LFoot.attach(LFPin, 544, 2400);
@@ -54,16 +50,16 @@ void moveRLeg(uint8_t angle) {
 
 void startPeripherals() {
   // Sets trigger as an OUTPUT to HC-SR04
-  pinMode(trigPin, OUTPUT);
-  // Sets echo as an INPUT from HC-SR04
-  pinMode(echoPin, INPUT);
-  // Set signal as OUTPUT to buzzer
-  pinMode(buzzPin, OUTPUT);
-  // Set signal as INPUT from button. GND is connected, and will
-  // override input pullup when pushed. Don't need VCC (IO15)
+  // pinMode(trigPin, OUTPUT);
+  // Sets echo as an INPUT from HC-SR04c (voltage divider 10k - 10k)
+  // pinMode(echoPin, INPUT);
+  // Set signal as OUTPUT to buzzer (connect GND and signal 2 wires!)
+  // pinMode(buzzPin, OUTPUT);
+  // toneAC uses pin 25 and 26 for differential signal to buzzer
+  // Set signal as INPUT from button. (Connect GND and signal 2 wires!)
   pinMode(pushPin, INPUT_PULLUP);
 }
-
+/*
 uint32_t getDistance() {
   // Clears the trigPin condition
   digitalWrite(trigPin, LOW);
@@ -82,91 +78,17 @@ uint32_t getDistance() {
   Serial.println(" cm");
   return distance;
 }
-
+*/
 void setup() {
   startSerial();
-  startWiFi();
-  startOTA();
-  startMDNS();
   startPeripherals();
   startRemote();
+  matrix.begin(0x70);  // pass in the address
 }
 
 void startSerial() {
   Serial.begin(115200);
   Serial.println("ESP Serial ready");
-}
-
-void startWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(Config.network.wifi.ssid, Config.network.wifi.password);
-  Serial.println("Connecting to Wifi");
-  uint16_t retries = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    if (retries++ >= 20) {
-      Serial.println();
-      Serial.println("Unable to connect to Wifi. Rebooting the ESP..");
-      Serial.flush();
-      ESP.restart();
-    }
-    delay(500);
-  }
-  // Functions below may or may not work
-  WiFi.setAutoReconnect(true);
-  WiFi.persistent(true);
-  // Alternatively implement event handler on disconnect
-  WiFi.onEvent([](WiFiEvent_t event) {
-    if (event == WiFiEvent_t::SYSTEM_EVENT_ETH_DISCONNECTED) {
-      Serial.println("Disconnected from Wi-Fi, trying to reconnect...");
-      WiFi.disconnect();
-      startWiFi();
-    }
-  });
-  Serial.println();
-  Serial.print("Connected to ");
-  Serial.println(Config.network.wifi.ssid);
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  Serial.println("ESP WiFi ready");
-}
-
-void startOTA() {
-  ArduinoOTA.setPort(Config.network.server.ota_port);
-  ArduinoOTA.setHostname(Config.network.server.hostname);
-  ArduinoOTA.onStart([]() {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH)
-      type = "sketch";
-    else
-      type = "filesystem";
-    Serial.println("Start updating " + type);
-  });
-  ArduinoOTA.onEnd([]() { Serial.println("\nEnd"); });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR)
-      Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR)
-      Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR)
-      Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR)
-      Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR)
-      Serial.println("End Failed");
-  });
-  ArduinoOTA.begin();
-  Serial.println("ESP OTA ready");
-}
-
-void startMDNS() {
-  MDNS.begin(Config.network.server.hostname);
-  Serial.printf("ESP mDNS responder %s.local ready\n",
-                Config.network.server.hostname);
 }
 
 void startRemote() {
@@ -190,9 +112,19 @@ void startRemote() {
         moveRLeg(120);
         walk = true;
       }
-      delay(300);
+      delay(1500);
+      LLeg.detach();
+      RLeg.detach();
     }
-
+    if (button.cross) {
+    }
+    if (button.square) {
+      sounddev.play_wave(0);
+    }
+    if (button.circle) {
+      sounddev.next_song();
+      sounddev.play_song();
+    }
     // Left = -x. Right = +x. Up = -y. Down = +y. Range -128 to 127
     x = (stick.rx / 128.0f);
     // Flip up and down to correct for y value
@@ -230,28 +162,166 @@ void startRemote() {
   Ps3.begin("B1:6B:00:B1:E5:00");
 }
 
-void makeSound() {
-  static bool soundMode = true;
-  uint32_t distance = getDistance();
-  if (digitalRead(pushPin) == LOW) {
-    soundMode = !soundMode;
-  }
-
-  if (soundMode) {
-    if ((distance >= 02) && (distance < 07)) tone(buzzPin, NOTE_C5);
-    if ((distance >= 07) && (distance < 12)) tone(buzzPin, NOTE_D5);
-    if ((distance >= 12) && (distance < 17)) tone(buzzPin, NOTE_E5);
-    if ((distance >= 17) && (distance < 22)) tone(buzzPin, NOTE_F5);
-    if ((distance >= 22) && (distance < 27)) tone(buzzPin, NOTE_G5);
-    if ((distance >= 27) && (distance < 32)) tone(buzzPin, NOTE_A5);
-    if ((distance >= 32) && (distance < 37)) tone(buzzPin, NOTE_B5);
-    if ((distance >= 37) && (distance < 42)) tone(buzzPin, NOTE_C6);
-  } else {
-    noTone(buzzPin);
-  }
-}
+void matrix_loop();
+void knight_rider();
+void angry();
 
 void loop() {
   ArduinoOTA.handle();
-  makeSound();
+  if (digitalRead(pushPin) == LOW) {
+    // uint32_t distance = getDistance();
+    // sounddev.tone(distance);
+  } else {
+    sounddev.loop();
+  }
+  // matrix_loop();
+  const char *name = sounddev.get_song().name;
+  if (String(name).equals("Knight Rider")) {
+    knight_rider();
+  } else {
+    angry();
+  }
+}
+
+void knight_rider() {
+  static uint16_t angle = 0;
+  static long wait_ms = 0;
+  matrix.clear();
+  matrix.setRotation(1);
+
+  if (millis() >= wait_ms) {
+    wait_ms = millis() + 30;
+    angle = (angle + 1) % 360;
+  }
+  float f = sin(angle / (2 * PI));  // -1 to 1
+  f *= 8;                           // -8 to 8;
+  f += 8;                           // 0 to 16;
+  if (f > 15) f = 15;
+  for (int i = 3; i < 6; i++) {
+    matrix.drawPixel(f, i, LED_ON);
+  }
+  matrix.writeDisplay();
+}
+
+void angry() {
+  matrix.clear();
+  matrix.setRotation(2);
+  matrix.drawBitmap(0, 0, angry_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+}
+
+void matrix_loop() {
+  matrix.setTextSize(1);
+  matrix.setTextWrap(true);  // we dont want text to wrap so it scrolls nicely
+  matrix.setTextColor(LED_ON);
+  matrix.setRotation(3);
+  for (int8_t x = 0; x >= -70; x--) {
+    matrix.clear();
+    matrix.setCursor(x, 0);
+    matrix.print("I am a Ninja!");
+    matrix.writeDisplay();
+    delay(100);
+  }
+  matrix.setRotation(0);
+
+  matrix.clear();
+  matrix.drawBitmap(0, 8, full_bmp, 8, 8, LED_ON);
+  matrix.writeDisplay();
+  delay(1000);
+
+  matrix.clear();
+  matrix.drawBitmap(0, 0, full_bmp, 8, 8, LED_ON);
+  matrix.writeDisplay();
+  delay(1000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, happy_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, eyes_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, sad_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, angry_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, sleep_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, freetful_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, love_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, confused_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, wave_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, magic_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(2000);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, fail_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(500);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, xx_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(200);
+  matrix.clear();
+  matrix.drawBitmap(0, 0, XX_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(1000);
+
+  matrix.clear();
+  matrix.drawBitmap(0, 0, logo_bmp, 8, 16, LED_ON);
+  matrix.writeDisplay();
+  delay(1000);
+
+  matrix.setTextSize(1);
+  matrix.setTextWrap(false);  // we dont want text to wrap so it scrolls nicely
+  matrix.setTextColor(LED_ON);
+  matrix.setRotation(1);
+  for (int8_t x = 7; x >= -36; x--) {
+    matrix.clear();
+    matrix.setCursor(x, 0);
+    matrix.print("Otto DIY");
+    matrix.writeDisplay();
+    delay(100);
+  }
+  matrix.setRotation(0);
+
+  matrix.clear();  // clear display
+  matrix.drawPixel(0, 0, LED_ON);
+  matrix.writeDisplay();  // write the changes we just made to the display
+  delay(500);
+
+  matrix.clear();
+  matrix.drawLine(0, 0, 7, 15, LED_ON);
+  matrix.writeDisplay();  // write the changes we just made to the display
+  delay(500);
+
+  matrix.clear();
+  matrix.drawRect(0, 0, 8, 16, LED_ON);
+  matrix.fillRect(2, 2, 4, 12, LED_ON);
+  matrix.writeDisplay();  // write the changes we just made to the display
+  delay(500);
+
+  matrix.clear();
+  matrix.drawCircle(3, 8, 3, LED_ON);
+  matrix.writeDisplay();  // write the changes we just made to the display
+  delay(500);
 }
